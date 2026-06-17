@@ -29,6 +29,14 @@ make CUDA_PATH=/opt/cuda   # 如果 CUDA 不在默认路径
 
 ## 用法
 
+
+
+### 效果演示
+
+RTX 4070 在 --target 80 下的 GPU 利用率曲线：
+
+![RTX 4070 GPU 利用率效果演示](images/demo.png)
+
 ```bash
 # 所有可见 GPU 拉到 70%
 ./gpu-filler
