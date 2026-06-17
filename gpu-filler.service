@@ -1,0 +1,40 @@
+# systemd unit template for gpu-filler.
+#
+# Install:
+#   sudo cp gpu-filler.service /etc/systemd/system/
+#   sudo cp gpu-filler /usr/local/bin/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now gpu-filler
+#
+# Edit ExecStart below to match the GPU layout you want.
+
+[Unit]
+Description=GPU idle utilization filler
+After=nvidia-persistenced.service
+Wants=nvidia-persistenced.service
+
+[Service]
+Type=simple
+# Run as a low-privilege user that can access /dev/nvidia*. Adjust as needed.
+User=nobody
+Group=nogroup
+
+# Lowest CPU priority for the host driver thread; the GPU side uses
+# cudaStreamCreateWithPriority already.
+Nice=19
+IOSchedulingClass=idle
+
+# Tweak --gpus / --target / --spec for your fleet.
+ExecStart=/usr/local/bin/gpu-filler --gpus 0,1,2,3 --target 70
+
+Restart=on-failure
+RestartSec=5s
+
+# Hardening (optional but recommended)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
