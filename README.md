@@ -14,6 +14,7 @@ NVML 实现，不依赖 Python / PyTorch。
   idle_ms → 自动让出份额。
 
 默认显存占用很小：每卡约 12 MiB（1024×1024 fp32 的 A/B/C 三块矩阵）。
+也可通过 `--mem` 指定显存占用量，用于模拟真实负载的显存压力。
 
 ## 编译
 
@@ -55,6 +56,9 @@ RTX 4070 在 --target 80 下的 GPU 利用率曲线：
 
 # 看控制器每个 tick 的状态
 ./gpu-filler --gpus 0 --target 70 --verbose
+
+# 指定显存占用（例如 1 GiB/卡）
+./gpu-filler --gpus 4 --target 70 --mem 1024
 ```
 
 用 `SIGINT`（Ctrl-C）或 `SIGTERM` 停止。
@@ -67,6 +71,7 @@ RTX 4070 在 --target 80 下的 GPU 利用率曲线：
 | `--target PCT` | `70` | 1..99，每卡的默认目标利用率 |
 | `--spec LIST` | — | `0:70,1:50,...`，覆盖列出 GPU 的 `--target` |
 | `--size N` | `1024` | NxN SGEMM 矩阵大小；越大单次 burst 越密、显存越多 |
+| `--mem MB` | `0` | 每卡显存占用量（MiB）。`0` = 默认 ~12MiB。分配多份 C 矩阵填充到指定量 |
 | `--tick MS` | `200` | 控制器 tick 间隔 |
 | `--verbose` | 关 | 每卡每 tick 打一行日志 |
 
@@ -92,8 +97,8 @@ CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=30 ./gpu-filler --gpus 4 --target 70
 - **NVML 利用率是时间占比，不是算力密度**。它表示采样窗口内有 kernel 运行
   的时间百分比。这正是大多数监控面板显示的指标，通常也正是你想拉高的，但
   别和 TFLOPS 利用率混淆。
-- **显存不会动态归还**。共享卡上保持默认 `--size` 即可，避免把真任务挤
-  OOM。
+- **显存不会动态归还**。共享卡上用默认 `--size` + `--mem 0` 即可，避免把真
+  任务挤 OOM。`--mem` 只在确定有足够显存空闲时使用。
 - **Stream 优先级在老架构上是建议性的**。Volta+ 才是稳定生效的。
 - **多进程跑同一张卡**：每个实例自己跑反馈环。两个实例打同一张卡会互相
   抢、来回震荡——请用一个多卡实例。

@@ -88,6 +88,7 @@ struct Config {
     int                max_work_ms    = 200;
     int                min_idle_ms    = 5;
     int                max_idle_ms    = 500;
+    int                memory_mb      = 0;      // 0 = default ~12MiB
     bool               verbose        = false;
 };
 
@@ -109,6 +110,8 @@ static void print_usage(const char* prog) {
         "                    e.g. --spec 0:70,1:50,3:85\n"
         "  --size  N         SGEMM matrix size (NxN fp32). Default: 1024.\n"
         "                    Larger -> more SM occupancy per burst, more VRAM.\n"
+        "  --mem   MB        VRAM to occupy per GPU in MiB. 0 = default ~12MiB.\n"
+        "                    Uses multiple C matrices to fill the space.\n"
         "  --tick  MS        Controller tick interval in ms. Default: 200.\n"
         "  --verbose         Log per-tick state.\n"
         "  -h, --help        Show this help.\n"
@@ -167,6 +170,13 @@ static bool parse_args(int argc, char** argv, Config& cfg) {
             if (!parse_int(need("--tick"), cfg.tick_ms) ||
                 cfg.tick_ms < 50 || cfg.tick_ms > 5000) {
                 std::fprintf(stderr, "[gpu-filler] --tick must be 50..5000\n");
+                return false;
+            }
+        }
+        else if (a == "--mem")    {
+            if (!parse_int(need("--mem"), cfg.memory_mb) ||
+                cfg.memory_mb < 0) {
+                std::fprintf(stderr, "[gpu-filler] --mem must be >= 0 (MB)\n");
                 return false;
             }
         }
@@ -288,16 +298,24 @@ static void worker_main(Worker w) {
     CUBLAS_CHECK(cublasSetStream(blas, stream));
 
     const int N = cfg.matrix_size;
-    const size_t bytes = (size_t)N * N * sizeof(float);
+    const size_t mat_bytes = (size_t)N * N * sizeof(float);
+
+    // Determine how many C matrices to allocate to fill requested VRAM.
+    const size_t d_iters = (cfg.memory_mb > 0)
+        ? std::max((size_t)1,
+                   (((size_t)cfg.memory_mb * 1024 * 1024) - 2 * mat_bytes)
+                       / mat_bytes)
+        : 1;
+
     float *dA = nullptr, *dB = nullptr, *dC = nullptr;
-    CUDA_CHECK(cudaMalloc(&dA, bytes));
-    CUDA_CHECK(cudaMalloc(&dB, bytes));
-    CUDA_CHECK(cudaMalloc(&dC, bytes));
+    CUDA_CHECK(cudaMalloc(&dA, mat_bytes));
+    CUDA_CHECK(cudaMalloc(&dB, mat_bytes));
+    CUDA_CHECK(cudaMalloc(&dC, d_iters * mat_bytes));
 
     // Initialize with a fixed pattern; values don't matter, we never read C.
-    CUDA_CHECK(cudaMemsetAsync(dA, 0x3f, bytes, stream));
-    CUDA_CHECK(cudaMemsetAsync(dB, 0x3f, bytes, stream));
-    CUDA_CHECK(cudaMemsetAsync(dC, 0,    bytes, stream));
+    CUDA_CHECK(cudaMemsetAsync(dA, 0x3f, mat_bytes, stream));
+    CUDA_CHECK(cudaMemsetAsync(dB, 0x3f, mat_bytes, stream));
+    CUDA_CHECK(cudaMemsetAsync(dC, 0,    d_iters * mat_bytes, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
     const float alpha = 1.0f, beta = 0.0f;
@@ -311,6 +329,7 @@ static void worker_main(Worker w) {
     log_line("[gpu-filler] gpu " + std::to_string(w.gpu_id) +
              " (" + prop.name + ") target=" + std::to_string(w.target_util) +
              "% size=" + std::to_string(N) +
+             " vram=" + std::to_string((2 + d_iters) * mat_bytes / 1024 / 1024) + "MB" +
              " stream_prio=" + std::to_string(lo_pri));
 
     while (!g_stop.load()) {
@@ -319,11 +338,14 @@ static void worker_main(Worker w) {
                      std::chrono::milliseconds(work_ms);
         int gemm_count = 0;
         while (std::chrono::steady_clock::now() < t_end && !g_stop.load()) {
+            // Cycle through C matrices to touch all allocated VRAM.
+            size_t c_idx = (size_t)gemm_count % d_iters;
+            float *dC_cur = dC + c_idx * (size_t)N * N;
             CUBLAS_CHECK(cublasSgemm(blas,
                                      CUBLAS_OP_N, CUBLAS_OP_N,
                                      N, N, N,
                                      &alpha, dA, N, dB, N,
-                                     &beta,  dC, N));
+                                     &beta,  dC_cur, N));
             ++gemm_count;
             // Don't synchronize every iteration; let kernels queue up so the
             // scheduler has work to interleave with real tasks.
